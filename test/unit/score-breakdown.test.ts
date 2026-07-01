@@ -16,7 +16,7 @@ const snapshot: ScoringModelSnapshotRecord = {
     MERGED_PR_BASE_SCORE: 25,
     MIN_TOKEN_SCORE_FOR_BASE_SCORE: 5,
     MAX_CODE_DENSITY_MULTIPLIER: 1.15,
-    MAX_CONTRIBUTION_BONUS: 25,
+    MAX_CONTRIBUTION_BONUS: 5,
     CONTRIBUTION_SCORE_FOR_FULL_BONUS: 1500,
     STANDARD_ISSUE_MULTIPLIER: 1.33,
     MAINTAINER_ISSUE_MULTIPLIER: 1.66,
@@ -381,7 +381,9 @@ describe("explainScoreBreakdown", () => {
     const breakdown = explainScoreBreakdown(preview);
     expect(breakdown.components.find((entry) => entry.component === "densityMultiplier")).toMatchObject({ band: "blocked" });
     expect(breakdown.components.find((entry) => entry.component === "issueMultiplier")?.lever).toMatch(/Fix linked issue state/i);
-    expect(breakdown.highestLeverageLever.component).toBe("densityMultiplier");
+    // baseScore and densityMultiplier tie at leverageScore 75 when the gate is not passed;
+    // baseScore wins alphabetically as the root-cause lever.
+    expect(breakdown.highestLeverageLever.component).toBe("baseScore");
   });
 
   it("selects a reduced multiplier as highest leverage when nothing is fully blocked", () => {
@@ -448,9 +450,8 @@ describe("explainScoreBreakdown", () => {
     expect(breakdown.components.find((entry) => entry.component === "openPrMultiplier")).toMatchObject({ band: "blocked" });
   });
 
-  it("explains the saturated base-score cap as blocked (no source), neutral (low contribution), and full (saturated)", () => {
-    // Blocked: source-token gate not passed → baseScore sits at 0 with the gate copy.
-    const smallSource = buildScorePreview({
+  it("blocks base-score projection when the source-token gate has not passed", () => {
+    const preview = buildScorePreview({
       repo,
       snapshot,
       input: {
@@ -463,14 +464,13 @@ describe("explainScoreBreakdown", () => {
         credibility: 1,
       },
     });
-    const blocked = explainScoreBreakdown(smallSource).components.find((entry) => entry.component === "baseScore")!;
-    expect(blocked).toMatchObject({ band: "blocked", leverageScore: 70 });
-    expect(blocked.summary).toMatch(/not yet in the score pipeline|minimum meaningful source-change/);
+    const entry = explainScoreBreakdown(preview).components.find((c) => c.component === "baseScore")!;
+    expect(entry).toMatchObject({ band: "blocked", leverageScore: 75 });
+    expect(entry.summary).toMatch(/not yet in the score pipeline|minimum meaningful source-change/);
+  });
 
-    // Neutral: gate passed, baseScore below the 30-point cap, contribution bonus present. The summary
-    // names BOTH dimensions explicitly (baseScore + contributionBonus) — avoids the §7 Tier A rule 3
-    // collapse-copy nit by always iterating on observed values.
-    const lowContribution = buildScorePreview({
+  it("surfaces a neutral (sub-cap) base score with the contribution bonus present", () => {
+    const preview = buildScorePreview({
       repo,
       snapshot,
       input: {
@@ -483,27 +483,51 @@ describe("explainScoreBreakdown", () => {
         credibility: 1,
       },
     });
-    const neutral = explainScoreBreakdown(lowContribution).components.find((entry) => entry.component === "baseScore")!;
-    expect(neutral).toMatchObject({ band: "neutral" });
-    expect(neutral.summary).toMatch(/contributing toward|base \d|contribution bonus/);
+    const entry = explainScoreBreakdown(preview).components.find((c) => c.component === "baseScore")!;
+    expect(entry).toMatchObject({ band: "neutral" });
+    expect(entry.summary).toMatch(/contributing toward|base \d|contribution bonus/);
+  });
 
-    // Full: source-token gate passed + baseScore saturated near the 30-point cap.
-    const saturated = buildScorePreview({
+  it("surfaces a neutral base-score branch when gate passed but no contribution bonus earned", () => {
+    const preview = buildScorePreview({
+      repo,
+      snapshot,
+      input: {
+        repoFullName: repo.fullName,
+        contributorLogin: "miner",
+        sourceTokenScore: 10,
+        totalTokenScore: 0,
+        sourceLines: 40,
+        openPrCount: 0,
+        credibility: 1,
+      },
+    });
+    const entry = explainScoreBreakdown(preview).components.find((c) => c.component === "baseScore")!;
+    expect(entry).toMatchObject({ band: "neutral" });
+    expect(entry.leverageScore).toBe(12);
+    expect(entry.summary).toMatch(/contributing toward|base \d|contribution bonus not contributing/);
+  });
+
+  it("surfaces the base score as saturated (full) near the score cap", () => {
+    // Density model: baseScore = 25 × densityMultiplier + contributionBonus. To saturate at >= 29.5
+    // with MAX_CONTRIBUTION_BONUS=5, need densityMultiplier ≈ 1.15 (sourceTokenScore/sourceLines ≥ 1.15)
+    // and totalTokenScore ≥ 1500 for the full bonus: 25 × 1.15 + 5 = 33.75.
+    const preview = buildScorePreview({
       repo,
       snapshot,
       input: {
         repoFullName: repo.fullName,
         contributorLogin: "miner",
         sourceTokenScore: 200,
-        totalTokenScore: 1800,
-        sourceLines: 800,
+        totalTokenScore: 1500,
+        sourceLines: 170,
         openPrCount: 0,
         credibility: 1,
       },
     });
-    const fullEntry = explainScoreBreakdown(saturated).components.find((entry) => entry.component === "baseScore")!;
-    expect(fullEntry).toMatchObject({ band: "full" });
-    expect(fullEntry.summary).toMatch(/saturated near the 30-point cap/);
-    expect(JSON.stringify(explainScoreBreakdown(saturated))).not.toMatch(FORBIDDEN);
+    const entry = explainScoreBreakdown(preview).components.find((c) => c.component === "baseScore")!;
+    expect(entry).toMatchObject({ band: "full" });
+    expect(entry.summary).toMatch(/saturated near the score cap/);
+    expect(JSON.stringify(explainScoreBreakdown(preview))).not.toMatch(FORBIDDEN);
   });
 });

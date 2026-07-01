@@ -32,11 +32,13 @@ function bandForMultiplier(value: number, blockedAtZero = true): ScoreMultiplier
 }
 
 // Sibling of densityBreakdown for the saturated base-score value (#808 / entrius/gittensor
-// constants.py): `base_score = 25 × (1 - exp(-src_tok / SRC_TOK_SATURATION_SCALE=58))
-// + min(total_token_score / CONTRIBUTION_SCORE_FOR_FULL_BONUS=1500, 1) × MAX_CONTRIBUTION_BONUS=5`,
-// capped at 30. densityBreakdown surfaces the saturation ratio (densityMultiplier); this surfaces the
+// constants.py): `base_score = MERGED_PR_BASE_SCORE × (1 - exp(-src_tok / SRC_TOK_SATURATION_SCALE))
+// + min(total_token_score / CONTRIBUTION_SCORE_FOR_FULL_BONUS, 1) × MAX_CONTRIBUTION_BONUS`.
+// densityBreakdown surfaces the saturation ratio (densityMultiplier); this surfaces the
 // actual base_score the contributor has earned — the foundation that flows into estimatedMergedScore
 // before the multipliers apply — so a miner sees both the curve and the resulting cap contribution.
+const BASE_SCORE_SATURATION_DISPLAY_THRESHOLD = 29.5;
+
 function baseScoreBreakdown(preview: ScorePreviewResult): ScoreMultiplierBreakdown {
   const { baseScore, contributionBonus } = preview.scoreEstimate;
   const baseGatePassed = preview.gates.baseTokenGatePassed;
@@ -44,15 +46,15 @@ function baseScoreBreakdown(preview: ScorePreviewResult): ScoreMultiplierBreakdo
     return {
       component: "baseScore",
       band: "blocked",
-      summary: `Base score is not yet in the score pipeline — the change does not meet the minimum meaningful source-change threshold (current base is ${roundBand(baseScore)} of the 30-point cap).`,
+      summary: `Base score is not yet in the score pipeline — the change does not meet the minimum meaningful source-change threshold (current base is ${roundBand(baseScore)}).`,
       lever: "Add more substantive source changes or tighten the diff before relying on this preview.",
-      leverageScore: 70,
+      leverageScore: 75,
     };
   }
-  const cappedAtMax = baseScore >= 29.5;
+  const cappedAtMax = baseScore >= BASE_SCORE_SATURATION_DISPLAY_THRESHOLD;
   const hasBonus = contributionBonus > 0;
   const bonusClause = hasBonus ? `; contribution bonus contributing at ${roundBand(contributionBonus)}` : "; contribution bonus not contributing";
-  const summary = `Base score is ${cappedAtMax ? "saturated near the 30-point cap" : "contributing toward the 30-point cap"} (current base ${roundBand(baseScore)}${bonusClause}).`;
+  const summary = `Base score is ${cappedAtMax ? "saturated near the score cap" : "contributing toward the score cap"} (current base ${roundBand(baseScore)}${bonusClause}).`;
   return {
     component: "baseScore",
     band: cappedAtMax ? "full" : "neutral",
